@@ -107,3 +107,8 @@ ENV/
 .vscode/
 .vs/
 .idea/
+
+# Training artefacts
+/trainer/all_data
+/trainer/saved_models
+/trainer/final_model

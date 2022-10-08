@@ -171,7 +171,7 @@ def get_recognizer(recog_network, network_params, character,\
         for key, value in state_dict.items():
             new_key = key[7:]
             new_state_dict[new_key] = value
-        model.load_state_dict(new_state_dict)
+        model.load_state_dict(new_state_dict, strict=False)
         if quantize:
             try:
                 torch.quantization.quantize_dynamic(model, dtype=torch.qint8, inplace=True)

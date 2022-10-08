@@ -1,5 +1,5 @@
-import torch
 import torch.nn as nn
+import torch
 import torch.nn.init as init
 import torchvision
 from torchvision import models
@@ -79,26 +79,6 @@ class vgg16_bn(torch.nn.Module):
         out = vgg_outputs(h_fc7, h_relu5_3, h_relu4_3, h_relu3_2, h_relu2_2)
         return out
 
-class BidirectionalLSTM(nn.Module):
-
-    def __init__(self, input_size, hidden_size, output_size):
-        super(BidirectionalLSTM, self).__init__()
-        self.rnn = nn.LSTM(input_size, hidden_size, bidirectional=True, batch_first=True)
-        self.linear = nn.Linear(hidden_size * 2, output_size)
-
-    def forward(self, input):
-        """
-        input : visual feature [batch_size x T x input_size]
-        output : contextual feature [batch_size x T x output_size]
-        """
-        try: # multi gpu needs this
-            self.rnn.flatten_parameters()
-        except: # quantization doesn't work with this 
-            pass
-        recurrent, _ = self.rnn(input)  # batch_size x T x input_size -> batch_size x T x (2*hidden_size)
-        output = self.linear(recurrent)  # batch_size x T x output_size
-        return output
-
 class VGG_FeatureExtractor(nn.Module):
 
     def __init__(self, input_channel, output_channel=256):
@@ -123,6 +103,59 @@ class VGG_FeatureExtractor(nn.Module):
     def forward(self, input):
         return self.ConvNet(input)
 
+class Model(nn.Module):
+
+    def __init__(self, input_channel, output_channel, hidden_size, num_class):
+        super(Model, self).__init__()
+        """ FeatureExtraction """
+        self.FeatureExtraction = ResNet_FeatureExtractor(input_channel, output_channel)
+        self.FeatureExtraction_output = output_channel  # int(imgH/16-1) * 512
+        self.AdaptiveAvgPool = nn.AdaptiveAvgPool2d((None, 1))  # Transform final (imgH/16-1) -> 1
+
+        """ Sequence modeling"""
+        self.SequenceModeling = nn.Sequential(
+            BidirectionalLSTM(self.FeatureExtraction_output, hidden_size, hidden_size),
+            BidirectionalLSTM(hidden_size, hidden_size, hidden_size))
+        self.SequenceModeling_output = hidden_size
+
+        """ Prediction """
+        self.Prediction = nn.Linear(self.SequenceModeling_output, num_class)
+
+
+    def forward(self, input, text):
+        """ Feature extraction stage """
+        visual_feature = self.FeatureExtraction(input)
+        visual_feature = self.AdaptiveAvgPool(visual_feature.permute(0, 3, 1, 2))  # [b, c, h, w] -> [b, w, c, h]
+        visual_feature = visual_feature.squeeze(3)
+
+        """ Sequence modeling stage """
+        contextual_feature = self.SequenceModeling(visual_feature)
+
+        """ Prediction stage """
+        prediction = self.Prediction(contextual_feature.contiguous())
+
+        return prediction
+
+class BidirectionalLSTM(nn.Module):
+
+    def __init__(self, input_size, hidden_size, output_size):
+        super(BidirectionalLSTM, self).__init__()
+        self.rnn = nn.LSTM(input_size, hidden_size, bidirectional=True, batch_first=True)
+        self.linear = nn.Linear(hidden_size * 2, output_size)
+
+    def forward(self, input):
+        """
+        input : visual feature [batch_size x T x input_size]
+        output : contextual feature [batch_size x T x output_size]
+        """
+        try: # multi gpu needs this
+            self.rnn.flatten_parameters()
+        except: # quantization doesn't work with this
+            pass
+        recurrent, _ = self.rnn(input)  # batch_size x T x input_size -> batch_size x T x (2*hidden_size)
+        output = self.linear(recurrent)  # batch_size x T x output_size
+        return output
+
 class ResNet_FeatureExtractor(nn.Module):
     """ FeatureExtractor of FAN (http://openaccess.thecvf.com/content_ICCV_2017/papers/Cheng_Focusing_Attention_Towards_ICCV_2017_paper.pdf) """
 
@@ -133,43 +166,7 @@ class ResNet_FeatureExtractor(nn.Module):
     def forward(self, input):
         return self.ConvNet(input)
 
-class BasicBlock(nn.Module):
-    expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        self.conv1 = self._conv3x3(inplanes, planes)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = self._conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-
-    def _conv3x3(self, in_planes, out_planes, stride=1):
-        "3x3 convolution with padding"
-        return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                         padding=1, bias=False)
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-        out += residual
-        out = self.relu(out)
-
-        return out
-
-        x = self.maxpool2(x)
-        x = self.layer2(x)
 class ResNet(nn.Module):
 
     def __init__(self, input_channel, output_channel, block, layers):
@@ -262,3 +259,42 @@ class ResNet(nn.Module):
         x = self.relu(x)
 
         return x
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = self._conv3x3(inplanes, planes)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = self._conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def _conv3x3(self, in_planes, out_planes, stride=1):
+        "3x3 convolution with padding"
+        return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                         padding=1, bias=False)
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+        x = self.maxpool2(x)
+        x = self.layer2(x)
